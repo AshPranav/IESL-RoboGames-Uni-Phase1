@@ -48,32 +48,23 @@ while True:
     frame = np.frombuffer(payload, dtype=np.uint8)
     frame = frame.reshape((height, width)).copy()
 
-    # 1. Define the portrait slice (center 50% of the screen)
-    # This ignores the yellow banners on the walls
-    start_col = width // 4
-    end_col = width - (width // 4)
-    
-    # 2. Create the mask ONLY for that center slice
-    # We use your successful Gaussian + Threshold logic here
-    blurred = cv2.GaussianBlur(frame, (5, 5), 0)
-    _, mask = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY)
-    
-    # Zero out everything outside our 'Portrait' zone
-    mask[:, 0:start_col] = 0
-    mask[:, end_col:width] = 0
+    # 1. Create a "Portrait" crop (Focus on the middle 50% of the screen)
+    # This cuts out the banners on the left and right edges
+    offset = width // 4
+    roi = frame[:, offset : width - offset]
 
-    # 3. Find the center of the line (Centroid)
-    M = cv2.moments(mask)
-    if M["m00"] > 0:
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        
-        # Draw a circle on the original frame so you can see the 'Target'
-        cv2.circle(frame, (cx, cy), 10, (255), -1)
-        
-        # Calculate Error: How far is the line from the screen center?
-        error = cx - (width // 2)
-        print(f"Error: {error}")
+    # 2. Use Adaptive Thresholding (Shadow Resistant)
+    # It calculates different thresholds for different parts of the image
+    mask_roi = cv2.adaptiveThreshold(roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                     cv2.THRESH_BINARY, 11, 2)
+
+    # 3. (Optional) Invert if the line is black, but for Yellow-on-Gray usually:
+    # If the line looks black in the mask, uncomment the next line:
+    # mask_roi = cv2.bitwise_not(mask_roi)
+
+    # 4. Show the result
+    cv2.imshow("Drone Camera", frame)
+    cv2.imshow("Smarter Mask", mask_roi)
 
     if cv2.waitKey(1) == 27:  
         break
