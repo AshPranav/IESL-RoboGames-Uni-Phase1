@@ -90,10 +90,10 @@ def land_and_disarm(master):
     print("✓ Drone Disarmed successfully.")
 
 
+
 def main():
 
 #PHASE 1
-
     # Create a connection to the MAVLink device (e.g., a drone)
     print("Connecting to vehicle...")
     master = mavutil.mavlink_connection('udp:0.0.0.0:14550')
@@ -143,8 +143,12 @@ def main():
 
     print("Parameters sent.")
 
+   
+
+
 
 #PHASE 2
+
 
     # ---- INITIALIZE CAMERA SOCKET ----
     HOST = "127.0.0.1" 
@@ -199,92 +203,99 @@ def main():
 
 
     print("Sending throttle...")
+
     takeoff(master, 3) # [cite: 108]
     
 
-     # --- PHASE 4: NAVIGATION ---
-    forward_speed = 0.4  # m/s
-    kp = 0.004           # Steering sensitivity (tuned for 0.6 speed)
-    print("🚀 Starting Autonomous Line Following...")
+    forward_speed = 0.6  # m/s
+    kp = 0.007           # Sensitivity
+             # Initial state
 
-    try:
-        while True:
-            # Receive Frame
-            header = recvall(cam_sock, 4)
-            if not header: break
-            width, height = struct.unpack("<HH", header)
+#PHASE 4
+    while True:
+        header = recvall(cam_sock, 4)
+        if header is None: break
+        width, height = struct.unpack("<HH", header)
 
-            payload = recvall(cam_sock, width * height)
-            if not payload: break
+        img_size = width * height
+        payload = recvall(cam_sock, img_size)
+        if payload is None: break
 
-            # Process Image
-            frame = np.frombuffer(payload, dtype=np.uint8).reshape((height, width)).copy()
-            blurred = cv2.GaussianBlur(frame, (5, 5), 0)
-            _, mask = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY)
-            
-            # Portrait Filter (Ignore side wall banners)
-            margin = int(width * 0.25)
-            mask[:, 0:margin] = 0
-            mask[:, width-margin:width] = 0
+        # 1. Step 1: Create writable copy [cite: 136]
+        frame = np.frombuffer(payload, dtype=np.uint8).reshape((height, width)).copy()
 
-            # Line Detection
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            error = 0
-            line_found = False
+        # 2. Step 2: Portrait Masking (Ignore side banners) [cite: 155]
+        blurred = cv2.GaussianBlur(frame, (5, 5), 0)
+        _, mask = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY)
+        
+        margin = int(width * 0.25)
+        mask[:, 0:margin] = 0
+        mask[:, width-margin:width] = 0
 
-            for cnt in contours:
-                if 100 < cv2.contourArea(cnt) < 6000:
-                    M = cv2.moments(cnt)
-                    if M["m00"] > 0:
-                        cx = int(M["m10"] / M["m00"])
-                        error = cx - (width // 2)
-                        cv2.circle(frame, (cx, height // 2), 10, (255), -1)
-                        line_found = True
-                        break
+        # 3. Step 3: Differentiate Line vs Pad 
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
 
-                else:
-                    # If line is lost (shadow or gap), stop moving forward to stay safe
-                    error = 0
-                    forward_speed = 0.1
- # 3. SEND VELOCITY COMMAND (The "Action")
-        # Ensure we are using MAV_FRAME_BODY_NED so X is always FORWARD
-            side_speed = -(error * kp) 
+        line_target = None
+        error = 0
 
-            # Bitmask 0b0000111111000111 (Decimal: 4039) 
-            # This tells ArduPilot: "Ignore position/accel, use Velocity X, Y, Z"
-            master.mav.set_position_target_local_ned_send(
-                0,                          # time_boot_ms
-                master.target_system,       # target_system
-                master.target_component,    # target_component
-                mavutil.mavlink.MAV_FRAME_BODY_NED, # Relative to drone front
-                0b0000111111000111,         # Type Mask: Enable Vx, Vy, Vz
-                0, 0, 0,                    # Position X, Y, Z (Ignored)
-                forward_speed,              # Velocity X (Forward)
-                side_speed,                 # Velocity Y (Right)
-                0,                          # Velocity Z (Down)
-                0, 0, 0,                    # Acceleration (Ignored)
-                0, 0                        # Yaw / Yaw Rate (Ignored)
-            )
+        
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            # Narrow strip is the line [cite: 155]
+            if 100 < area < 5000:
+                line_target = cnt
+            # Large block is the Takeoff/Landing Pad [cite: 154]
+            elif area >= 5000:
+                cv2.drawContours(frame, [cnt], -1, (127), 2) # Outline the pad
+
+        # 4. Step 4: Calculate Error for ArduPilot 
+        if line_target is not None:
+            M = cv2.moments(line_target)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                cv2.circle(frame, (cx, cy), 10, (255), -1)
+                
+                error = cx - (width // 2)
+                # You will send this 'error' to ArduPilot via MAVLink [cite: 219]
+                print(f"Line Center: {cx} | Steering Error: {error}")
+
+        cv2.imshow("Drone Camera", frame)
+        cv2.imshow("Mask", mask)
+
+        if cv2.waitKey(1) == 27: break   
 
 
+        # 1. GET THE CAMERA DATA (Add your camera connection/recv logic here)
+        # For now, let's assume you've integrated the camera loop and have 'error'
+        
+        # 2. CALCULATE STEERING (PID Control)
+        # If error is positive, drone moves right. If negative, moves left.
+        side_speed = -(error * kp) 
 
+        # 3. SEND VELOCITY COMMAND TO ARDUPILOT
+        master.mav.set_position_target_local_ned_send(
+            0,       # time_boot_ms
+            master.target_system, master.target_component,
+            mavutil.mavlink.MAV_FRAME_BODY_NED, # Relative to drone heading
+            0b0000111111000111, # Type mask: use only velocities
+            0, 0, 0,            # x, y, z positions (ignored)
+            forward_speed,      # Forward velocity (X)
+            side_speed,         # Right/Left velocity (Y)
+            0,                  # Down velocity (Z)
+            0, 0, 0,            # accelerations (ignored)
+            0, 0                # yaw, yaw_rate (ignored)
+        )
 
-            # Telemetry & Exit
-            cv2.imshow("Drone Camera", frame)
-            cv2.imshow("Drone Vision (Line Following)", mask)
+        # 4. SAFETY EXIT
 
-            if cv2.waitKey(1) & 0xFF == ord('x'):
-                break
+        if cv2.waitKey(1) & 0xFF == ord('x'):
+            break
+        cam_sock.close()
+        cv2.destroyAllWindows()
 
-    except KeyboardInterrupt:
-        print("\nManual Interrupt.")
-
-    # --- PHASE 5: CLEANUP ---
-    print("Cleaning up...")
-    cam_sock.close()
-    cv2.destroyAllWindows()
     land_and_disarm(master)
-
-
+    
 if __name__ == "__main__":
     main()
