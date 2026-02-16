@@ -202,9 +202,14 @@ def main():
     takeoff(master, 3) # [cite: 108]
     
 
+    print('Stabilizing altitude and clearning camera buffer...')
+    time.sleep(3)
+    print('Stabilized. Starting line following...')
      # --- PHASE 4: NAVIGATION ---
     forward_speed = 0.4  # m/s
-    kp = 0.004           # Steering sensitivity (tuned for 0.6 speed)
+    prev_error = 0
+    kp = 0.01  # Tune this (Start small)
+    kd = 0.005 # Tune this (Usually kp / 2 or kp / 4)
     print("🚀 Starting Autonomous Line Following...")
 
     try:
@@ -233,11 +238,18 @@ def main():
             line_found = False
 
             for cnt in contours:
-                if 100 < cv2.contourArea(cnt) < 6000:
+                if 500 < cv2.contourArea(cnt) < 6000:
                     M = cv2.moments(cnt)
                     if M["m00"] > 0:
                         cx = int(M["m10"] / M["m00"])
                         error = cx - (width // 2)
+                        # Calculate Derivative (rate of change)
+                        derivative = error - prev_error
+
+                        # PD Formula
+                        side_speed = -((error * kp) + (derivative * kd))
+
+                        prev_error = error
                         cv2.circle(frame, (cx, height // 2), 10, (255), -1)
                         line_found = True
                         break
